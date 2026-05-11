@@ -9,22 +9,20 @@ Track Google Ads click IDs (GCLIDs) through to successful Authorize.net payments
 ```
 User clicks Google Ad → lands on WordPress page with ?gclid=... in URL
     ↓
-JavaScript captures GCLID from URL → stores in localStorage + cookie
+JavaScript reads GCLID from URL → writes it into a hidden WPForms field
     ↓
-On form submit, JavaScript (wpformGclidCapture.js):
-  1. Intercepts the submit event before WPForms processes it
-  2. POSTs { gclid } to REST API → server inserts row, returns { ref_id } (serial PK)
-  3. Injects ref_id into a hidden WPForms field
-  4. Re-fires the submit event so WPForms takes over
-    ↓
-PHP hook reads ref_id from hidden field → sets it as invoiceNumber on the Authorize.net transaction
+User submits form → PHP hook fires server-side:
+  1. Reads gclid from the hidden field value
+  2. POSTs { gclid } to REST API (API key stays server-side, never in browser source)
+  3. Receives { ref_id } (serial PK, collision-free by construction)
+  4. Sets ref_id as invoiceNumber on the Authorize.net transaction
     ↓
 Authorize.net processes payment → fires webhook to your REST API
     ↓
 Your REST API:
   1. Receives webhook with transaction ID
   2. Reads invoiceNumber from payload (= ref_id)
-  3. Queries gclid_mappings table by ref_id to retrieve GCLID
+  3. Queries refid_gclid_mapping table by ref_id to retrieve GCLID
   4. Uploads offline conversion to Google Ads
 ```
 
@@ -121,14 +119,14 @@ add_filter(
 
 Your REST API needs two endpoints:
 
-### 3a. Save GCLID Mapping (called by the browser JS on form submit)
+### 3a. Save GCLID Mapping (called by the PHP hook on form submit)
 
 ```
 POST /gclid-mapping
 Body: { "gclid": "EAIaIQob..." }
 Auth: Bearer token
 
-→ INSERT INTO gclid_mappings (gclid) VALUES ($1) RETURNING id
+→ INSERT INTO refid_gclid_mapping (gclid) VALUES ($1) RETURNING refid
 → Return 200 { "ref_id": 42 }   ← serial PK, collision-free by construction
 ```
 

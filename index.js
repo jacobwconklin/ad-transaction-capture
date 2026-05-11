@@ -1,6 +1,8 @@
 import 'dotenv/config';
 
 import express from 'express';
+import swaggerUi from 'swagger-ui-express';
+import swaggerSpec from './swagger.js';
 import webhookRouter from './routes/webhook.js';
 import gclidMappingRouter from './routes/gclidMapping.js';
 import { testConnection, createTable, createGclidMappingsTable } from './services/db.js';
@@ -21,12 +23,46 @@ app.use(
 // Mount webhook routes under /webhook
 app.use('/webhook', webhookRouter);
 app.use('/gclid-mapping', gclidMappingRouter);
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 /**
- * GET /health
- * Lightweight liveness + DB-connectivity check.
- * Returns 200 if the server is running and the database pool can reach Postgres,
- * 500 with a JSON error if the DB connection fails.
+ * @openapi
+ * components:
+ *   schemas:
+ *     Error:
+ *       type: object
+ *       properties:
+ *         error:
+ *           type: string
+ *           example: Something went wrong
+ *
+ * /health:
+ *   get:
+ *     summary: Liveness and database connectivity check
+ *     description: Returns 200 if the server is running and the DB pool can reach Postgres.
+ *     responses:
+ *       200:
+ *         description: Server and database are healthy
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: ok
+ *       500:
+ *         description: Database connection failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: error
+ *                 message:
+ *                   type: string
  */
 app.get('/health', async (req, res) => {
   try {

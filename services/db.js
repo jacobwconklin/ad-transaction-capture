@@ -45,15 +45,15 @@ const createTable = async () => {
 
 /**
  * createGclidMappingsTable
- * Idempotent DDL — creates the gclid_mappings table if it doesn't exist yet.
+ * Idempotent DDL — creates the refid_gclid_mapping table if it doesn't exist yet.
  * The serial PK doubles as the ref_id returned to the client and later set as
  * Authorize.net's invoiceNumber, guaranteeing collision-free IDs without any
  * client-side generation logic.
  */
 const createGclidMappingsTable = async () => {
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS gclid_mappings (
-      id         SERIAL PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS refid_gclid_mapping (
+      refid         SERIAL PRIMARY KEY,
       gclid      TEXT        NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -141,17 +141,17 @@ const updateTransactionStatus = async (authnetTransactionId, status) => {
 
 /**
  * insertGclidMapping
- * Inserts a new gclid_mappings row and returns its serial id, which the
+ * Inserts a new refid_gclid_mapping row and returns its serial refid, which the
  * /gclid-mapping endpoint sends back to the browser as ref_id.
  * @param {string} gclid
- * @returns {number} The new row's id.
+ * @returns {number} The new row's refid.
  */
 const insertGclidMapping = async (gclid) => {
   const result = await pool.query(
-    'INSERT INTO gclid_mappings (gclid) VALUES ($1) RETURNING id',
+    'INSERT INTO refid_gclid_mapping (gclid) VALUES ($1) RETURNING refid',
     [gclid]
   );
-  return result.rows[0].id;
+  return result.rows[0].refid;
 };
 
 /**
@@ -163,7 +163,7 @@ const insertGclidMapping = async (gclid) => {
  */
 const getGclidByRefId = async (refId) => {
   const result = await pool.query(
-    'SELECT gclid FROM gclid_mappings WHERE id = $1',
+    'SELECT gclid FROM refid_gclid_mapping WHERE refid = $1',
     [parseInt(refId, 10)]
   );
   return result.rows[0]?.gclid || null;

@@ -119,4 +119,19 @@ const uploadRefundAdjustment = async ({ gclid, conversionDateTime, adjustmentDat
   });
 };
 
-export { uploadConversion, uploadRefundAdjustment };
+/**
+ * Converts a JS Date (or ISO string) to the format Google Ads expects:
+ * "YYYY-MM-DD HH:MM:SS+00:00"
+ * @param {Date|string} date
+ * @returns {string}
+ */
+const formatConversionDateTime = (date) => {
+  const d = new Date(date);
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}+00:00`
+  );
+};
+
+export { uploadConversion, uploadRefundAdjustment, formatConversionDateTime };

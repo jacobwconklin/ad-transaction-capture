@@ -5,7 +5,7 @@ import {
   getTransactionByAuthnetId,
   updateTransactionStatus,
 } from '../services/db.js';
-import { uploadConversion, uploadRefundAdjustment } from '../services/googleAds.js';
+import { uploadConversion, uploadRefundAdjustment, formatConversionDateTime } from '../services/googleAds.js';
 
 const router = express.Router();
 
@@ -25,54 +25,7 @@ const validateSiteConfig = (siteConfig) => {
   return null;
 };
 
-/** // TODO move this to googleAds service
- * formatConversionDateTime
- * Converts a JS Date (or ISO string) to the format Google Ads expects:
- * "YYYY-MM-DD HH:MM:SS+00:00"
- * @param {Date|string} date
- * @returns {string}
- */
-const formatConversionDateTime = (date) => {
-  const d = new Date(date);
-  const pad = (n) => String(n).padStart(2, '0');
-  return (
-    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
-    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}+00:00`
-  );
-};
-
-/** // TODO rename to "capture payment" or something similar
- * POST /webhook/authorizenet
- * Receives a payment capture event from Authorize.net.
- * Verifies the HMAC signature, persists the transaction, and (if successful)
- * fires a Google Ads conversion upload in the background.
- * Always returns 200 so Authorize.net does not retry the delivery.
- */
-router.post('/authorizenet', verifySignature, async (req, res) => {
-  // Respond 200 immediately — Google Ads upload runs after the response is sent.
-  res.status(200).json({ received: true });
-
-  const { authorizeNetPayload, siteConfig } = req.body;
-
-  // Log every incoming webhook for audit trail before any processing.
-  console.log(
-    `[webhook] Received authcapture event domain=${siteConfig?.domain} ` +
-      `at=${new Date().toISOString()}`
-  );
-
-  const configError = validateSiteConfig(siteConfig);
-  if (configError) {
-    console.error('[webhook] Invalid siteConfig:', configError);
-    return;
-  }
-
-  if (!authorizeNetPayload) {
-    console.error('[webhook] Missing authorizeNetPayload');
-    return;
-  }
-
-  // Extract fields from the Authorize.net payload.
-  // The gclid is stored as a custom field on the transaction.
+const handleAuthCapture = async ({ authorizeNetPayload, siteConfig }) => {
   const payload = authorizeNetPayload;
   const transactionId = payload?.payload?.id;
   const responseCode = payload?.payload?.responseCode;
@@ -84,7 +37,7 @@ router.post('/authorizenet', verifySignature, async (req, res) => {
   const gclid = gclidField?.fieldValue || null;
 
   if (!transactionId || amount === undefined) {
-    console.error('[webhook] Missing transactionId or amount in payload');
+    console.error('[webhook/authcapture] Missing transactionId or amount in payload');
     return;
   }
 
@@ -102,65 +55,33 @@ router.post('/authorizenet', verifySignature, async (req, res) => {
       rawPayload: payload,
     });
   } catch {
-    // insertTransaction already notified Slack and logged the error.
     return;
   }
 
   // Only upload a conversion for successful captures.
   if (responseCode !== 1) {
-    console.log(`[webhook] Payment not successful (responseCode=${responseCode}), skipping conversion`);
+    console.log(`[webhook/authcapture] Payment not successful (responseCode=${responseCode}), skipping conversion`);
     return;
   }
 
   if (!gclid) {
-    console.warn(`[webhook] No gclid for txn=${transactionId} domain=${siteConfig.domain}, skipping conversion`);
+    console.warn(`[webhook/authcapture] No gclid for txn=${transactionId} domain=${siteConfig.domain}, skipping conversion`);
     return;
   }
 
-  // Fire conversion upload — errors are caught inside uploadConversion with retry + Slack alert.
   uploadConversion({
     gclid,
     conversionDateTime: formatConversionDateTime(new Date()),
     conversionValue: parseFloat(amount),
     siteConfig,
   }).catch((err) => {
-    console.error('[webhook] Unhandled uploadConversion error:', err.message);
+    console.error('[webhook/authcapture] Unhandled uploadConversion error:', err.message);
   });
-});
+};
 
-
-/** // TODO also rename
- * POST /webhook/authorizenet/refund
- * Receives a refund event from Authorize.net (net.authorize.payment.refund.created).
- * Looks up the original transaction to retrieve the stored gclid, then updates the
- * transaction status and uploads a conversion adjustment to Google Ads.
- * Always returns 200 so Authorize.net does not retry the delivery.
- */
-router.post('/authorizenet/refund', verifySignature, async (req, res) => {
-  // Respond 200 immediately — processing runs after the response is sent.
-  res.status(200).json({ received: true });
-
-  const { authorizeNetPayload, siteConfig } = req.body;
-
-  console.log(
-    `[webhook] Received refund event domain=${siteConfig?.domain} ` +
-      `at=${new Date().toISOString()}`
-  );
-
-  const configError = validateSiteConfig(siteConfig);
-  if (configError) {
-    console.error('[webhook/refund] Invalid siteConfig:', configError);
-    return;
-  }
-
-  if (!authorizeNetPayload) {
-    console.error('[webhook/refund] Missing authorizeNetPayload');
-    return;
-  }
-
+const handleRefund = async ({ authorizeNetPayload, siteConfig }) => {
   const payload = authorizeNetPayload;
   const transactionId = payload?.payload?.id;
-  const refundAmount = payload?.payload?.authAmount;
 
   if (!transactionId) {
     console.error('[webhook/refund] Missing transactionId in payload');
@@ -175,14 +96,13 @@ router.post('/authorizenet/refund', verifySignature, async (req, res) => {
 
   if (!original) {
     // Authorize.net may send refund events for transactions we never captured (e.g. test mode).
-    // Log and exit — do not error so Authorize.net won't retry.
     console.warn(`[webhook/refund] Original transaction not found for txn=${transactionId} — skipping`);
     return;
   }
 
   // Mark the row refunded regardless of whether a Google Ads gclid exists.
   await updateTransactionStatus(transactionId, 'refunded').catch(() => {
-    // updateTransactionStatus already notified Slack; continue to attempt Google Ads upload.
+    // updateTransactionStatus already logged the error; continue to attempt Google Ads upload.
   });
 
   if (!original.gclid) {
@@ -199,6 +119,118 @@ router.post('/authorizenet/refund', verifySignature, async (req, res) => {
   }).catch((err) => {
     console.error('[webhook/refund] Unhandled uploadRefundAdjustment error:', err.message);
   });
+};
+
+/**
+ * @openapi
+ * /webhook/authorizenet:
+ *   post:
+ *     summary: Receive an Authorize.net payment webhook
+ *     description: >
+ *       Handles `net.authorize.payment.authcapture.created` and
+ *       `net.authorize.payment.refund.created` events. Persists the transaction
+ *       and uploads a conversion (or refund adjustment) to Google Ads.
+ *       Always returns 200 so Authorize.net does not retry delivery.
+ *     security:
+ *       - hmacSignature: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [authorizeNetPayload, siteConfig]
+ *             properties:
+ *               authorizeNetPayload:
+ *                 type: object
+ *                 description: Raw event object forwarded from Authorize.net
+ *                 properties:
+ *                   eventType:
+ *                     type: string
+ *                     example: net.authorize.payment.authcapture.created
+ *                   payload:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         example: '60032737027'
+ *                       responseCode:
+ *                         type: integer
+ *                         example: 1
+ *                       authAmount:
+ *                         type: number
+ *                         example: 199.99
+ *                       customFields:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                           properties:
+ *                             fieldName:
+ *                               type: string
+ *                             fieldValue:
+ *                               type: string
+ *               siteConfig:
+ *                 type: object
+ *                 required: [domain, currency, conversionActionId, customerId]
+ *                 properties:
+ *                   domain:
+ *                     type: string
+ *                     example: example.com
+ *                   currency:
+ *                     type: string
+ *                     example: USD
+ *                   conversionActionId:
+ *                     type: string
+ *                     example: '123456789'
+ *                   customerId:
+ *                     type: string
+ *                     example: '987-654-3210'
+ *     responses:
+ *       200:
+ *         description: Event received (always returned so Authorize.net does not retry)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 received:
+ *                   type: boolean
+ *                   example: true
+ */
+router.post('/authorizenet', verifySignature, async (req, res) => {
+  // Respond 200 immediately — processing runs after the response is sent.
+  res.status(200).json({ received: true });
+
+  const { authorizeNetPayload, siteConfig } = req.body;
+  const eventType = authorizeNetPayload?.eventType;
+
+  console.log(
+    `[webhook] Received event eventType=${eventType} domain=${siteConfig?.domain} ` +
+      `at=${new Date().toISOString()}`
+  );
+
+  // TODO Remove and restore below, temporarily printing entire webhook and then exiting. 
+  console.log('[webhook] Full webhook payload:', JSON.stringify(req.body, null, 2));
+  return;
+
+  // const configError = validateSiteConfig(siteConfig);
+  // if (configError) {
+  //   console.error('[webhook] Invalid siteConfig:', configError);
+  //   return;
+  // }
+
+  // if (!authorizeNetPayload) {
+  //   console.error('[webhook] Missing authorizeNetPayload');
+  //   return;
+  // }
+
+  // if (eventType === 'net.authorize.payment.refund.created') {
+  //   await handleRefund({ authorizeNetPayload, siteConfig });
+  // } else if (eventType === 'net.authorize.payment.authcapture.created') {
+  //   await handleAuthCapture({ authorizeNetPayload, siteConfig });
+  // } else {
+  //   console.warn(`[webhook] Unhandled eventType=${eventType}, ignoring`);
+  // }
 });
 
 export default router;
