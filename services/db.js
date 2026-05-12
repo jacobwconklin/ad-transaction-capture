@@ -2,7 +2,10 @@ import { Pool } from 'pg';
 import { sendErrorEmail } from './email.js';
 
 // Single pool shared across all requests — avoids opening a new connection per webhook call.
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
 pool.on('error', (err) => {
   console.error('[db] Unexpected pool error:', err.message);
