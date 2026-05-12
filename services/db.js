@@ -2,8 +2,11 @@ import { Pool } from 'pg';
 import { sendErrorEmail } from './email.js';
 
 // Single pool shared across all requests — avoids opening a new connection per webhook call.
+const dbUrl = new URL(process.env.DATABASE_URL);
+dbUrl.searchParams.set('sslmode', 'no-verify');
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl.toString(),
   ssl: { rejectUnauthorized: false },
 });
 
