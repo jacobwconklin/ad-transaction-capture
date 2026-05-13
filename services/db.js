@@ -27,27 +27,22 @@ const testConnection = async () => {
 };
 
 /**
- * createTable
+ * createTransactionsTable
  * Idempotent DDL — creates the transactions table if it doesn't exist yet.
  * Called once at startup so the schema is always in sync without a separate migration step.
  */
-const createTable = async () => {
+const createTransactionsTable = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS transactions (
-      id                     SERIAL PRIMARY KEY,
+      id                     SERIAL  PRIMARY KEY,
       authnet_transaction_id TEXT        NOT NULL,
-      site_domain            TEXT        NOT NULL,
-      gclid                  TEXT,
+      ref_id                 INTEGER     NOT NULL REFERENCES refid_gclid_mapping(refid),
       amount                 NUMERIC     NOT NULL,
-      currency               TEXT        NOT NULL,
-      conversion_action_id   TEXT        NOT NULL,
-      customer_id            TEXT        NOT NULL,
       status                 TEXT        NOT NULL DEFAULT 'captured',
-      refund                 BOOLEAN     NOT NULL DEFAULT false,
       created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-}; // TODO 1 may remove this later, but should keep record of SQL
+};
 
 /**
  * createDomainsTable
@@ -64,7 +59,7 @@ const createDomainsTable = async () => {
       conversion_action_id TEXT        NOT NULL,
       customer_id          TEXT        NOT NULL,
       created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (customer_id, conversion_action_id)
+      UNIQUE (customer_id, conversion_action_id, currency)
     )
   `);
 };
@@ -93,39 +88,17 @@ const createGclidMappingsTable = async () => {
  * @param {object} data - Fields extracted from the Authorize.net payload + siteConfig.
  */
 const insertTransaction = async (data) => {
-  const {
-    authnetTransactionId,
-    siteDomain,
-    gclid,
-    amount,
-    currency,
-    conversionActionId,
-    customerId,
-    status,
-    refund = false,
-  } = data;
+  const { authnetTransactionId, refId, amount } = data;
 
   try {
     await pool.query(
-      `INSERT INTO transactions
-         (authnet_transaction_id, site_domain, gclid, amount, currency,
-          conversion_action_id, customer_id, status, refund)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        authnetTransactionId,
-        siteDomain,
-        gclid || null,
-        amount,
-        currency,
-        conversionActionId,
-        customerId,
-        status || 'captured',
-        refund,
-      ]
+      `INSERT INTO transactions (authnet_transaction_id, ref_id, amount, status)
+       VALUES ($1, $2, $3, 'captured')`,
+      [authnetTransactionId, refId, amount]
     );
   } catch (err) {
     console.error('[db] insertTransaction failed:', err.message);
-    await sendErrorEmail(`insertTransaction failed for domain=${siteDomain} txn=${authnetTransactionId}: ${err.message}`);
+    await sendErrorEmail(`insertTransaction failed for txn=${authnetTransactionId}: ${err.message}`);
     throw err;
   }
 };
@@ -155,8 +128,8 @@ const getTransactionByAuthnetId = async (authnetTransactionId) => {
 const updateTransactionStatus = async (authnetTransactionId, status) => {
   try {
     await pool.query(
-      'UPDATE transactions SET status = $1, refund = $2 WHERE authnet_transaction_id = $3',
-      [status, status === 'refunded', authnetTransactionId]
+      'UPDATE transactions SET status = $1 WHERE authnet_transaction_id = $2',
+      [status, authnetTransactionId]
     );
   } catch (err) {
     console.error('[db] updateTransactionStatus failed:', err.message);
@@ -175,13 +148,16 @@ const updateTransactionStatus = async (authnetTransactionId, status) => {
  * @returns {number} The domain's id.
  */
 const upsertDomain = async ({ currency, conversionActionId, customerId }) => {
-  const result = await pool.query(
+  await pool.query(
     `INSERT INTO domains (currency, conversion_action_id, customer_id)
      VALUES ($1, $2, $3)
-     ON CONFLICT (customer_id, conversion_action_id)
-     DO UPDATE SET currency = EXCLUDED.currency
-     RETURNING id`,
+     ON CONFLICT (customer_id, conversion_action_id, currency) DO NOTHING`,
     [currency, conversionActionId, customerId]
+  );
+  const result = await pool.query(
+    `SELECT id FROM domains
+     WHERE customer_id = $1 AND conversion_action_id = $2 AND currency = $3`,
+    [customerId, conversionActionId, currency]
   );
   return result.rows[0].id;
 };
@@ -241,7 +217,7 @@ const getDomainById = async (domainId) => {
 
 export {
   testConnection,
-  createTable,
+  createTransactionsTable,
   createDomainsTable,
   createGclidMappingsTable,
   insertTransaction,

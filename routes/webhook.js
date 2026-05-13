@@ -11,9 +11,8 @@ import { uploadConversion, uploadRefundAdjustment, formatConversionDateTime } fr
 
 const router = express.Router();
 
-const handleAuthCapture = async ({ payload, gclid, siteConfig }) => {
+const handleAuthCapture = async ({ payload, refId, gclid, siteConfig }) => {
   const transactionId = payload?.payload?.id;
-  const responseCode = payload?.payload?.responseCode;
   const amount = payload?.payload?.authAmount;
 
   if (!transactionId || amount === undefined) {
@@ -21,25 +20,9 @@ const handleAuthCapture = async ({ payload, gclid, siteConfig }) => {
     return;
   }
 
-  // Persist the transaction regardless of payment outcome.
   try {
-    await insertTransaction({
-      authnetTransactionId: transactionId,
-      siteDomain: siteConfig.customerId,
-      gclid,
-      amount,
-      currency: siteConfig.currency,
-      conversionActionId: siteConfig.conversionActionId,
-      customerId: siteConfig.customerId,
-      status: responseCode === 1 ? 'captured' : 'declined',
-    });
+    await insertTransaction({ authnetTransactionId: transactionId, refId, amount });
   } catch {
-    return;
-  }
-
-  // Only upload a conversion for successful captures.
-  if (responseCode !== 1) {
-    console.log(`[webhook/authcapture] Payment not successful (responseCode=${responseCode}), skipping conversion`);
     return;
   }
 
@@ -158,7 +141,7 @@ router.post('/authorizenet', verifySignature, async (req, res) => {
   if (eventType === 'net.authorize.payment.refund.created') {
     await handleRefund({ payload: req.body, gclid, siteConfig });
   } else if (eventType === 'net.authorize.payment.authcapture.created') {
-    await handleAuthCapture({ payload: req.body, gclid, siteConfig });
+    await handleAuthCapture({ payload: req.body, refId: merchantReferenceId, gclid, siteConfig });
   } else {
     console.warn(`[webhook] Unhandled eventType=${eventType}, ignoring`);
   }
