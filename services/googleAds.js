@@ -51,12 +51,12 @@ const withRetry = async (label, fn) => {
  * @param {string} params.gclid               - Google Click ID stored on the transaction.
  * @param {string} params.conversionDateTime  - ISO-style string: "2026-05-05 14:30:00+00:00"
  * @param {number} params.conversionValue     - Transaction amount.
- * @param {object} params.siteConfig          - Per-site config from the request body.
+ * @param {object} params.siteConfig          - Per-site config resolved from the domains table.
  */
 const uploadConversion = async ({ gclid, conversionDateTime, conversionValue, siteConfig }) => {
   const { customerId, conversionActionId, currency } = siteConfig;
 
-  await withRetry(`uploadConversion(domain=${siteConfig.domain})`, async () => {
+  await withRetry(`uploadConversion(customerId=${siteConfig.customerId})`, async () => {
     const customer = client.Customer({
       customer_id: customerId,
       refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN,
@@ -87,12 +87,12 @@ const uploadConversion = async ({ gclid, conversionDateTime, conversionValue, si
  * @param {string} params.gclid                    - Google Click ID from the original transaction.
  * @param {string} params.conversionDateTime       - Original conversion date/time string.
  * @param {string} params.adjustmentDateTime       - When the refund occurred.
- * @param {object} params.siteConfig               - Per-site config from the request body.
+ * @param {object} params.siteConfig               - Per-site config resolved from the domains table.
  */
 const uploadRefundAdjustment = async ({ gclid, conversionDateTime, adjustmentDateTime, siteConfig }) => {
   const { customerId, conversionActionId } = siteConfig;
 
-  await withRetry(`uploadRefundAdjustment(domain=${siteConfig.domain})`, async () => {
+  await withRetry(`uploadRefundAdjustment(customerId=${siteConfig.customerId})`, async () => {
     const customer = client.Customer({
       customer_id: customerId,
       refresh_token: process.env.GOOGLE_ADS_REFRESH_TOKEN,

@@ -43,29 +43,49 @@ const createTable = async () => {
       conversion_action_id   TEXT        NOT NULL,
       customer_id            TEXT        NOT NULL,
       status                 TEXT        NOT NULL DEFAULT 'captured',
-      raw_payload            JSONB       NOT NULL,
+      refund                 BOOLEAN     NOT NULL DEFAULT false,
       created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 }; // TODO 1 may remove this later, but should keep record of SQL
 
 /**
+ * createDomainsTable
+ * Idempotent DDL — creates the domains table if it doesn't exist yet.
+ * Each row represents a unique client site identified by its Google Ads
+ * customer_id + conversion_action_id pair. Upserted on every GCLID mapping
+ * POST so no manual server-side setup is needed when onboarding a new site.
+ */
+const createDomainsTable = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS domains (
+      id                   SERIAL PRIMARY KEY,
+      currency             TEXT        NOT NULL,
+      conversion_action_id TEXT        NOT NULL,
+      customer_id          TEXT        NOT NULL,
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (customer_id, conversion_action_id)
+    )
+  `);
+};
+
+/**
  * createGclidMappingsTable
  * Idempotent DDL — creates the refid_gclid_mapping table if it doesn't exist yet.
  * The serial PK doubles as the ref_id returned to the client and later set as
  * Authorize.net's invoiceNumber, guaranteeing collision-free IDs without any
- * client-side generation logic.
+ * client-side generation logic. domain_id links each mapping to its site config.
  */
 const createGclidMappingsTable = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS refid_gclid_mapping (
-      refid         SERIAL PRIMARY KEY,
+      refid      SERIAL  PRIMARY KEY,
       gclid      TEXT        NOT NULL,
+      domain_id  INTEGER     NOT NULL REFERENCES domains(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 };
-// TODO don't want to store large raw payload can be useful to see for now
 
 /**
  * insertTransaction
@@ -82,14 +102,14 @@ const insertTransaction = async (data) => {
     conversionActionId,
     customerId,
     status,
-    rawPayload,
+    refund = false,
   } = data;
 
   try {
     await pool.query(
       `INSERT INTO transactions
          (authnet_transaction_id, site_domain, gclid, amount, currency,
-          conversion_action_id, customer_id, status, raw_payload)
+          conversion_action_id, customer_id, status, refund)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         authnetTransactionId,
@@ -100,7 +120,7 @@ const insertTransaction = async (data) => {
         conversionActionId,
         customerId,
         status || 'captured',
-        JSON.stringify(rawPayload),
+        refund,
       ]
     );
   } catch (err) {
@@ -135,8 +155,8 @@ const getTransactionByAuthnetId = async (authnetTransactionId) => {
 const updateTransactionStatus = async (authnetTransactionId, status) => {
   try {
     await pool.query(
-      'UPDATE transactions SET status = $1 WHERE authnet_transaction_id = $2',
-      [status, authnetTransactionId]
+      'UPDATE transactions SET status = $1, refund = $2 WHERE authnet_transaction_id = $3',
+      [status, status === 'refunded', authnetTransactionId]
     );
   } catch (err) {
     console.error('[db] updateTransactionStatus failed:', err.message);
@@ -146,42 +166,89 @@ const updateTransactionStatus = async (authnetTransactionId, status) => {
 };
 
 /**
+ * upsertDomain
+ * Inserts a domain config row if one doesn't already exist for this
+ * (customer_id, conversion_action_id) pair, then returns the row's id.
+ * Called on every GCLID mapping POST so new sites self-register without
+ * any manual server-side setup.
+ * @param {{ currency: string, conversionActionId: string, customerId: string }} data
+ * @returns {number} The domain's id.
+ */
+const upsertDomain = async ({ currency, conversionActionId, customerId }) => {
+  const result = await pool.query(
+    `INSERT INTO domains (currency, conversion_action_id, customer_id)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (customer_id, conversion_action_id)
+     DO UPDATE SET currency = EXCLUDED.currency
+     RETURNING id`,
+    [currency, conversionActionId, customerId]
+  );
+  return result.rows[0].id;
+};
+
+/**
  * insertGclidMapping
  * Inserts a new refid_gclid_mapping row and returns its serial refid, which the
  * /gclid-mapping endpoint sends back to the browser as ref_id.
- * @param {string} gclid
+ * @param {{ gclid: string, domainId: number }} data
  * @returns {number} The new row's refid.
  */
-const insertGclidMapping = async (gclid) => {
+const insertGclidMapping = async ({ gclid, domainId }) => {
   const result = await pool.query(
-    'INSERT INTO refid_gclid_mapping (gclid) VALUES ($1) RETURNING refid',
-    [gclid]
+    'INSERT INTO refid_gclid_mapping (gclid, domain_id) VALUES ($1, $2) RETURNING refid',
+    [gclid, domainId]
   );
   return result.rows[0].refid;
 };
 
 /**
- * getGclidByRefId
- * Looks up the gclid stored for a given ref_id (the serial PK).
- * Called by the webhook handler after reading invoiceNumber off the Authorize.net transaction.
+ * getMappingByRefId
+ * Looks up the gclid and domain_id stored for a given ref_id (the serial PK).
+ * Called by the webhook handler after reading merchantReferenceId off the
+ * Authorize.net payload.
  * @param {number|string} refId
- * @returns {string|null}
+ * @returns {{ gclid: string, domainId: number }|null}
  */
-const getGclidByRefId = async (refId) => {
+const getMappingByRefId = async (refId) => {
   const result = await pool.query(
-    'SELECT gclid FROM refid_gclid_mapping WHERE refid = $1',
+    'SELECT gclid, domain_id FROM refid_gclid_mapping WHERE refid = $1',
     [parseInt(refId, 10)]
   );
-  return result.rows[0]?.gclid || null;
+  if (!result.rows[0]) return null;
+  return { gclid: result.rows[0].gclid, domainId: result.rows[0].domain_id };
+};
+
+/**
+ * getDomainById
+ * Retrieves a domain's site config by its id.
+ * Called by the webhook handler after resolving domain_id from the mapping table.
+ * @param {number} domainId
+ * @returns {{ currency: string, conversionActionId: string, customerId: string }|null}
+ */
+const getDomainById = async (domainId) => {
+  const result = await pool.query(
+    'SELECT currency, conversion_action_id, customer_id FROM domains WHERE id = $1',
+    [domainId]
+  );
+  if (!result.rows[0]) return null;
+  const row = result.rows[0];
+  return {
+    currency: row.currency,
+    conversionActionId: row.conversion_action_id,
+    customerId: row.customer_id,
+  };
 };
 
 export {
   testConnection,
   createTable,
+  createDomainsTable,
   createGclidMappingsTable,
   insertTransaction,
+  upsertDomain,
   insertGclidMapping,
-  getGclidByRefId,
+  getMappingByRefId,
+  getDomainById,
   getTransactionByAuthnetId,
   updateTransactionStatus,
 };

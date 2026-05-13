@@ -1,7 +1,7 @@
 # Google Ads Webhook API — Plan
 
 ## Overview
-Express REST API that receives Authorize.net payment webhooks, persists transactions to PostgreSQL, and reports conversions to Google Ads via GCLID. A single hosted instance serves multiple WordPress sites — each site passes its own per-domain config (currency, conversion action ID, customer ID) with every request.
+Express REST API that receives Authorize.net payment webhooks, persists transactions to PostgreSQL, and reports conversions to Google Ads via GCLID. A single hosted instance serves multiple WordPress sites — each site's per-domain config (currency, conversion action ID, customer ID) is stored server-side in a `domains` table, populated when the PHP snippet posts the GCLID mapping on form submission. No per-site config is passed with webhook events.
 
 ---
 
@@ -48,47 +48,48 @@ Express REST API that receives Authorize.net payment webhooks, persists transact
 ### 2. Database
 - [ ] Connect to PostgreSQL using `pg`
 - [ ] Use `pg.Pool` to create a connection pool at application startup for efficient connection reuse across requests (avoid opening a new connection per request)
+- [ ] Create `domains` table:
+  - `id` (serial PK), `currency`, `conversion_action_id`, `customer_id`, `created_at`
+  - Unique constraint on `(customer_id, conversion_action_id)` to prevent duplicates
+- [ ] Create `refid_gclid_mapping` table:
+  - `refid` (serial PK), `gclid`, `domain_id` (FK → `domains.id`), `created_at`
 - [ ] Create `transactions` table:
-  - `id` (serial PK), `authnet_transaction_id`, `site_domain`, `gclid`, `amount`, `currency`, `conversion_action_id`, `customer_id`, `status`, `raw_payload` (jsonb), `created_at`
+  - `id` (serial PK), `authnet_transaction_id`, `site_domain`, `gclid`, `amount`, `currency`, `conversion_action_id`, `customer_id`, `status`, `refund` (boolean, default false), `created_at`
+- [ ] Write `upsertDomain({ currency, conversionActionId, customerId })` — inserts or returns existing domain row
+- [ ] Write `insertGclidMapping({ gclid, domainId })` — returns new `refid`
+- [ ] Write `getGclidAndDomainByRefId(refId)` — returns `{ gclid, domain_id }` from mapping table
+- [ ] Write `getDomainById(domainId)` — returns `{ currency, conversion_action_id, customer_id }` from domains table
 - [ ] Write `insertTransaction(data)` query function using `pool.query()`
 - [ ] Write `updateTransactionStatus(authnetTransactionId, status)` query function (used by refund endpoint) using `pool.query()`
 - [ ] On failure to connect or insert into the database, send an error email with the error
 
-### 3. Per-Domain Config — Request Schema
-Each webhook `POST` body must include a `siteConfig` object alongside the Authorize.net payload:
-```json
-{
-  "authorizeNetPayload": { ... },
-  "siteConfig": {
-    "domain": "client-site.com",
-    "currency": "USD",
-    "conversionActionId": "123456789",
-    "customerId": "111-222-3333"
-  }
-}
-```
-- [ ] Validate that `siteConfig` fields are present; reject with `400` if missing
-- [ ] Use `siteConfig` values for all downstream DB writes and Google Ads calls
-- [ ] No per-site secrets stored server-side — shared Google Ads developer token and OAuth credentials cover all customer accounts under the same MCC (manager account)
+### 3. Per-Domain Config — Server-Side Storage
+Per-site config (currency, conversion action ID, customer ID) is stored in the `domains` table, not passed with webhook events. Config is written once when the PHP snippet first posts a GCLID mapping for a site.
+
+- [ ] On `POST /gclid-mapping`, accept `{ gclid, currency, conversion_action_id, customer_id }` in the request body
+- [ ] Upsert into `domains` based on `(customer_id, conversion_action_id)` — insert if new, return existing `id` if already present
+- [ ] Insert into `refid_gclid_mapping` with the returned `domain_id` as a foreign key
+- [ ] No per-site config is stored server-side in `.env` — shared Google Ads developer token and OAuth credentials cover all customer accounts under the same MCC (manager account)
+- [ ] On `POST /webhook/authorizenet`, read `merchantReferenceId` from the Authorize.net payload, look up `gclid` and `domain_id` from `refid_gclid_mapping`, then look up site config from `domains` by `domain_id`
 
 ### 4. Webhook Endpoint — `POST /webhook/authorizenet`
 - [ ] Verify Authorize.net `X-ANET-Signature` header (HMAC-SHA512 of raw body vs. signature key)
-- [ ] Parse payload, extract: `transactionId`, `amount`, `responseCode`, and custom field `gclid`
-- [ ] Validate `siteConfig` fields present
-- [ ] Insert record into `transactions` table (including `site_domain`, `currency`, `conversion_action_id`, `customer_id`)
+- [ ] Parse payload, extract: `eventType`, `merchantReferenceId`, `transactionId`, `amount`, `responseCode`
+- [ ] If `merchantReferenceId` is absent, log that the transaction did not originate from a Google Ad and return early
+- [ ] Look up `gclid` and `domain_id` from `refid_gclid_mapping` by `merchantReferenceId`
+- [ ] Look up site config (`currency`, `conversion_action_id`, `customer_id`) from `domains` by `domain_id`
+- [ ] Insert record into `transactions` table
 - [ ] On failure to insert into the database, send an error email with the error
-- [ ] If payment successful (`responseCode === 1`), call Google Ads service with `siteConfig`
+- [ ] If payment successful (`responseCode === 1`), call Google Ads service with resolved site config
 - [ ] Return `200 OK` immediately regardless of Google Ads outcome
 
-### 4b. Refund Webhook Endpoint — `POST /webhook/authorizenet/refund`
-- [ ] Apply same `verifySignature` middleware — identical HMAC-SHA512 check
-- [ ] Parse payload, extract: `transactionId`, `refundAmount`, and `siteConfig` (same schema as payment endpoint)
-- [ ] Look up the original transaction in DB by `authnet_transaction_id` to retrieve the stored `gclid`, `conversionActionId`, and `customerId`
-- [ ] Update the transaction row: set `status = 'refunded'`
+### 4b. Refund Webhook — handled in same endpoint
+- [ ] On `net.authorize.payment.refund.created`, apply same `merchantReferenceId` → `gclid` + `domain_id` lookup
+- [ ] Look up the original transaction in DB by `authnet_transaction_id` to retrieve its `created_at` for the adjustment timestamp
+- [ ] Update the transaction row: set `status = 'refunded'` and `refund = true`
 - [ ] On failure to update the database, send an error email with the error
-- [ ] If original transaction found and has a `gclid`, call Google Ads refund service with `siteConfig`
-- [ ] If original transaction not found, log a warning and return `200 OK` (don't error — Authorize.net will retry)
-- [ ] Event to handle: `net.authorize.payment.refund.created`
+- [ ] Call Google Ads refund adjustment service with resolved site config
+- [ ] If original transaction not found, log a warning and return (don't error — Authorize.net will retry)
 
 ### 5. Google Ads Conversion Upload — with Exponential Backoff
 - [ ] Authenticate with Google Ads API using shared OAuth2 refresh token (covers all MCC sub-accounts)
@@ -142,6 +143,8 @@ Per-site values (`customerId`, `conversionActionId`, `currency`) come from the r
 - Each site's Conversion Action must already exist in its respective Google Ads account
 
 ## Multi-Site Notes
-- One running server instance handles all 5 sites
-- Sites are distinguished by `siteConfig.domain` in logs and DB rows
+- One running server instance handles all sites
+- Per-site config (currency, conversion action ID, customer ID) is stored in the `domains` table, written on first GCLID mapping POST from each site
+- Sites are distinguished by `domain_id` (FK from `refid_gclid_mapping` → `domains`) in DB rows
 - No routing changes needed per site — the endpoint is identical for all callers
+- No cross-site data contamination: each mapping row carries its own `domain_id`, so a webhook event always resolves to the correct site's config

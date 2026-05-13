@@ -59,9 +59,14 @@ Paste the full contents of `saveGclid.php`, then fill in the placeholders:
 | `YOUR_MAPPING_API_KEY` | API key from the shared server `.env` → `GCLID_MAPPING_API_KEY` |
 | `YOUR_MAPPING_API_URL` | Public URL of the shared server, e.g. `https://your-api.com/gclid-mapping` |
 | `YOUR_REF_ID_FIELD_ID` | Numeric field ID of the Ref ID hidden field from Step 1 (e.g. `5`) |
+| `YOUR_CURRENCY` | The site's billing currency, e.g. `USD`, `CAD`, or `EUR` |
+| `YOUR_CONVERSION_ACTION_ID` | The Google Ads conversion action ID for this site (found in Google Ads → Goals → Conversions → click the action → the numeric ID in the URL) |
+| `YOUR_CUSTOMER_ID` | The Google Ads customer ID for this site (10-digit number shown in the top-right of Google Ads, without dashes) |
+
+> **Important:** `YOUR_CURRENCY`, `YOUR_CONVERSION_ACTION_ID`, and `YOUR_CUSTOMER_ID` are hardcoded per-site directly in the PHP snippet. These values are sent to the mapping API on every form submission so the server can store this site's config without any manual server-side setup per client.
 
 This single snippet:
-- Registers a WordPress REST endpoint at `/wp-json/gclid/v1/save` that proxies the gclid to the mapping API using the key server-side
+- Registers a WordPress REST endpoint at `/wp-json/gclid/v1/save` that proxies the gclid (and site config) to the mapping API using the key server-side
 - Passes the returned `ref_id` to Authorize.net as the invoice number
 
 Activate and save.
@@ -97,8 +102,10 @@ If the Google Ads upload fails, a Slack alert will fire. Check Slack for error d
 
 ```
 [ ] Collected: mappingApiKey, mappingApiUrl
+[ ] Collected: currency, conversion_action_id, customer_id for this site
 [ ] Step 1 — Created one WPForms hidden field (Ref ID); noted its numeric field ID
 [ ] Step 2 — Added captureGclid.js via WPCode (type: JavaScript, type=module); filled CONFIG
 [ ] Step 3 — Added saveGclid.php via WPCode (type: PHP, Run Everywhere); filled all placeholders
+           including YOUR_CURRENCY, YOUR_CONVERSION_ACTION_ID, YOUR_CUSTOMER_ID
 [ ] Step 4 — Verified GCLID capture, field population, API call, and Google Ads upload end-to-end
 ```

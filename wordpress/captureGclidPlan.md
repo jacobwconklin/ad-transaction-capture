@@ -13,17 +13,22 @@ JavaScript reads GCLID from URL → writes it into a hidden WPForms field
     ↓
 User submits form → PHP hook fires server-side:
   1. Reads gclid from the hidden field value
-  2. POSTs { gclid } to REST API (API key stays server-side, never in browser source)
-  3. Receives { ref_id } (serial PK, collision-free by construction)
-  4. Sets ref_id as invoiceNumber on the Authorize.net transaction
+  2. POSTs { gclid, currency, conversion_action_id, customer_id } to REST API
+     (API key stays server-side, never in browser source)
+     (currency, conversion_action_id, customer_id are hardcoded per-site in the PHP snippet)
+  3. REST API upserts a row into the domains table for this site's config,
+     then inserts into refid_gclid_mapping with the domain_id foreign key
+  4. Receives { ref_id } (serial PK, collision-free by construction)
+  5. Sets ref_id as invoiceNumber on the Authorize.net transaction
     ↓
 Authorize.net processes payment → fires webhook to your REST API
     ↓
 Your REST API:
   1. Receives webhook with transaction ID
-  2. Reads invoiceNumber from payload (= ref_id)
-  3. Queries refid_gclid_mapping table by ref_id to retrieve GCLID
-  4. Uploads offline conversion to Google Ads
+  2. Reads merchantReferenceId from payload (= ref_id)
+  3. Queries refid_gclid_mapping table by ref_id → retrieves gclid AND domain_id
+  4. Queries domains table by domain_id → retrieves currency, conversion_action_id, customer_id
+  5. Uploads offline conversion to Google Ads
 ```
 
 ## Piece 1: JavaScript — Capture GCLID Into Hidden Form Field
@@ -123,11 +128,37 @@ Your REST API needs two endpoints:
 
 ```
 POST /gclid-mapping
-Body: { "gclid": "EAIaIQob..." }
+Body: {
+  "gclid": "EAIaIQob...",
+  "currency": "USD",
+  "conversion_action_id": "123456789",
+  "customer_id": "111-222-3333"
+}
 Auth: Bearer token
 
-→ INSERT INTO refid_gclid_mapping (gclid) VALUES ($1) RETURNING refid
+→ Upsert into domains (currency, conversion_action_id, customer_id) → get domain_id
+→ INSERT INTO refid_gclid_mapping (gclid, domain_id) VALUES ($1, $2) RETURNING refid
 → Return 200 { "ref_id": 42 }   ← serial PK, collision-free by construction
+```
+
+**Database tables:**
+
+```sql
+CREATE TABLE IF NOT EXISTS domains (
+  id                   SERIAL PRIMARY KEY,
+  currency             TEXT NOT NULL,
+  conversion_action_id TEXT NOT NULL,
+  customer_id          TEXT NOT NULL,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (customer_id, conversion_action_id)
+);
+
+CREATE TABLE IF NOT EXISTS refid_gclid_mapping (
+  refid      SERIAL PRIMARY KEY,
+  gclid      TEXT        NOT NULL,
+  domain_id  INTEGER     NOT NULL REFERENCES domains(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 ```
 
 ### 3b. Authorize.net Webhook Handler (called by Authorize.net on payment success)

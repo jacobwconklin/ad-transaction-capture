@@ -4,37 +4,17 @@ import {
   insertTransaction,
   getTransactionByAuthnetId,
   updateTransactionStatus,
+  getMappingByRefId,
+  getDomainById,
 } from '../services/db.js';
 import { uploadConversion, uploadRefundAdjustment, formatConversionDateTime } from '../services/googleAds.js';
 
 const router = express.Router();
 
-/**
- * validateSiteConfig
- * Returns a validation error string if any required siteConfig field is absent,
- * otherwise returns null. Keeps both endpoints consistent on what's required.
- * @param {object} siteConfig
- * @returns {string|null}
- */
-const validateSiteConfig = (siteConfig) => {
-  if (!siteConfig) return 'siteConfig is required';
-  const required = ['domain', 'currency', 'conversionActionId', 'customerId'];
-  for (const key of required) {
-    if (!siteConfig[key]) return `siteConfig.${key} is required`;
-  }
-  return null;
-};
-
-const handleAuthCapture = async ({ authorizeNetPayload, siteConfig }) => {
-  const payload = authorizeNetPayload;
+const handleAuthCapture = async ({ payload, gclid, siteConfig }) => {
   const transactionId = payload?.payload?.id;
   const responseCode = payload?.payload?.responseCode;
   const amount = payload?.payload?.authAmount;
-
-  // Custom fields are an array of { fieldName, fieldValue } objects.
-  const customFields = payload?.payload?.customFields || [];
-  const gclidField = customFields.find((f) => f.fieldName === 'hidden_gclid');
-  const gclid = gclidField?.fieldValue || null;
 
   if (!transactionId || amount === undefined) {
     console.error('[webhook/authcapture] Missing transactionId or amount in payload');
@@ -45,14 +25,13 @@ const handleAuthCapture = async ({ authorizeNetPayload, siteConfig }) => {
   try {
     await insertTransaction({
       authnetTransactionId: transactionId,
-      siteDomain: siteConfig.domain,
+      siteDomain: siteConfig.customerId,
       gclid,
       amount,
       currency: siteConfig.currency,
       conversionActionId: siteConfig.conversionActionId,
       customerId: siteConfig.customerId,
       status: responseCode === 1 ? 'captured' : 'declined',
-      rawPayload: payload,
     });
   } catch {
     return;
@@ -61,11 +40,6 @@ const handleAuthCapture = async ({ authorizeNetPayload, siteConfig }) => {
   // Only upload a conversion for successful captures.
   if (responseCode !== 1) {
     console.log(`[webhook/authcapture] Payment not successful (responseCode=${responseCode}), skipping conversion`);
-    return;
-  }
-
-  if (!gclid) {
-    console.warn(`[webhook/authcapture] No gclid for txn=${transactionId} domain=${siteConfig.domain}, skipping conversion`);
     return;
   }
 
@@ -79,8 +53,7 @@ const handleAuthCapture = async ({ authorizeNetPayload, siteConfig }) => {
   });
 };
 
-const handleRefund = async ({ authorizeNetPayload, siteConfig }) => {
-  const payload = authorizeNetPayload;
+const handleRefund = async ({ payload, gclid, siteConfig }) => {
   const transactionId = payload?.payload?.id;
 
   if (!transactionId) {
@@ -88,31 +61,25 @@ const handleRefund = async ({ authorizeNetPayload, siteConfig }) => {
     return;
   }
 
-  // Look up the original transaction to get the stored gclid.
+  // Look up the original transaction to get its created_at for the adjustment timestamp.
   const original = await getTransactionByAuthnetId(transactionId).catch((err) => {
     console.error('[webhook/refund] DB lookup failed:', err.message);
     return null;
   });
 
   if (!original) {
-    // Authorize.net may send refund events for transactions we never captured (e.g. test mode).
     console.warn(`[webhook/refund] Original transaction not found for txn=${transactionId} — skipping`);
     return;
   }
 
-  // Mark the row refunded regardless of whether a Google Ads gclid exists.
+  // Mark the row refunded regardless of whether the Google Ads upload succeeds.
   await updateTransactionStatus(transactionId, 'refunded').catch(() => {
     // updateTransactionStatus already logged the error; continue to attempt Google Ads upload.
   });
 
-  if (!original.gclid) {
-    console.warn(`[webhook/refund] No gclid on original txn=${transactionId}, skipping adjustment`);
-    return;
-  }
-
   // Upload a restatement adjustment that sets the conversion value to 0 (full refund).
   uploadRefundAdjustment({
-    gclid: original.gclid,
+    gclid,
     conversionDateTime: formatConversionDateTime(original.created_at),
     adjustmentDateTime: formatConversionDateTime(new Date()),
     siteConfig,
@@ -128,63 +95,12 @@ const handleRefund = async ({ authorizeNetPayload, siteConfig }) => {
  *     summary: Receive an Authorize.net payment webhook
  *     description: >
  *       Handles `net.authorize.payment.authcapture.created` and
- *       `net.authorize.payment.refund.created` events. Persists the transaction
- *       and uploads a conversion (or refund adjustment) to Google Ads.
+ *       `net.authorize.payment.refund.created` events. Resolves the gclid from
+ *       the merchantReferenceId in the payload, then persists the transaction and
+ *       uploads a conversion (or refund adjustment) to Google Ads.
  *       Always returns 200 so Authorize.net does not retry delivery.
  *     security:
  *       - hmacSignature: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [authorizeNetPayload, siteConfig]
- *             properties:
- *               authorizeNetPayload:
- *                 type: object
- *                 description: Raw event object forwarded from Authorize.net
- *                 properties:
- *                   eventType:
- *                     type: string
- *                     example: net.authorize.payment.authcapture.created
- *                   payload:
- *                     type: object
- *                     properties:
- *                       id:
- *                         type: string
- *                         example: '60032737027'
- *                       responseCode:
- *                         type: integer
- *                         example: 1
- *                       authAmount:
- *                         type: number
- *                         example: 199.99
- *                       customFields:
- *                         type: array
- *                         items:
- *                           type: object
- *                           properties:
- *                             fieldName:
- *                               type: string
- *                             fieldValue:
- *                               type: string
- *               siteConfig:
- *                 type: object
- *                 required: [domain, currency, conversionActionId, customerId]
- *                 properties:
- *                   domain:
- *                     type: string
- *                     example: example.com
- *                   currency:
- *                     type: string
- *                     example: USD
- *                   conversionActionId:
- *                     type: string
- *                     example: '123456789'
- *                   customerId:
- *                     type: string
- *                     example: '987-654-3210'
  *     responses:
  *       200:
  *         description: Event received (always returned so Authorize.net does not retry)
@@ -201,36 +117,51 @@ router.post('/authorizenet', verifySignature, async (req, res) => {
   // Respond 200 immediately — processing runs after the response is sent.
   res.status(200).json({ received: true });
 
-  const { authorizeNetPayload, siteConfig } = req.body;
-  const eventType = authorizeNetPayload?.eventType;
+  const eventType = req.body?.eventType;
+  const merchantReferenceId = req.body?.payload?.merchantReferenceId;
 
   console.log(
-    `[webhook] Received event eventType=${eventType} domain=${siteConfig?.domain} ` +
-      `at=${new Date().toISOString()}`
+    `[webhook] Received authorize.net event eventType=${eventType} at=${new Date().toISOString()}`
   );
 
-  // TODO Remove and restore below, temporarily printing entire webhook and then exiting. 
+  // TODO: Remove once payload shape is confirmed in prod.
   console.log('[webhook] Full webhook payload:', JSON.stringify(req.body, null, 2));
-  return;
 
-  // const configError = validateSiteConfig(siteConfig);
-  // if (configError) {
-  //   console.error('[webhook] Invalid siteConfig:', configError);
-  //   return;
-  // }
+  // merchantReferenceId is only present when the transaction originated from a Google Ad click.
+  if (!merchantReferenceId) {
+    console.log('[webhook] No merchantReferenceId in payload — transaction did not come from a Google Ad click, ignoring');
+    return;
+  }
 
-  // if (!authorizeNetPayload) {
-  //   console.error('[webhook] Missing authorizeNetPayload');
-  //   return;
-  // }
+  const mapping = await getMappingByRefId(merchantReferenceId).catch((err) => {
+    console.error('[webhook] getMappingByRefId failed:', err.message);
+    return null;
+  });
 
-  // if (eventType === 'net.authorize.payment.refund.created') {
-  //   await handleRefund({ authorizeNetPayload, siteConfig });
-  // } else if (eventType === 'net.authorize.payment.authcapture.created') {
-  //   await handleAuthCapture({ authorizeNetPayload, siteConfig });
-  // } else {
-  //   console.warn(`[webhook] Unhandled eventType=${eventType}, ignoring`);
-  // }
+  if (!mapping) {
+    console.warn(`[webhook] No mapping found for merchantReferenceId=${merchantReferenceId}, ignoring`);
+    return;
+  }
+
+  const { gclid, domainId } = mapping;
+
+  const siteConfig = await getDomainById(domainId).catch((err) => {
+    console.error('[webhook] getDomainById failed:', err.message);
+    return null;
+  });
+
+  if (!siteConfig) {
+    console.warn(`[webhook] No domain config found for domainId=${domainId}, ignoring`);
+    return;
+  }
+
+  if (eventType === 'net.authorize.payment.refund.created') {
+    await handleRefund({ payload: req.body, gclid, siteConfig });
+  } else if (eventType === 'net.authorize.payment.authcapture.created') {
+    await handleAuthCapture({ payload: req.body, gclid, siteConfig });
+  } else {
+    console.warn(`[webhook] Unhandled eventType=${eventType}, ignoring`);
+  }
 });
 
 export default router;

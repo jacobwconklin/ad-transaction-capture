@@ -5,7 +5,7 @@ import swaggerUi from 'swagger-ui-express';
 import swaggerSpec from './swagger.js';
 import webhookRouter from './routes/webhook.js';
 import gclidMappingRouter from './routes/gclidMapping.js';
-import { testConnection, createTable, createGclidMappingsTable } from './services/db.js';
+import { testConnection, createTable, createDomainsTable, createGclidMappingsTable } from './services/db.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -81,7 +81,8 @@ app.get('/health', async (req, res) => {
 const start = async () => {
   try {
     await createTable();
-    await createGclidMappingsTable();
+    await createDomainsTable();
+    await createGclidMappingsTable(); // depends on domains — must run after createDomainsTable
     console.log('[server] DB schema ready');
   } catch (err) {
     console.error('[server] Failed to initialize DB schema:', err.message);
