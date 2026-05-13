@@ -83,4 +83,4 @@ add_filter( 'wpforms_authorize_net_process_payment_single_args', function ( $arg
 
     return $args;
 
-}, 10, 3 );
+}, 20, 3 );
