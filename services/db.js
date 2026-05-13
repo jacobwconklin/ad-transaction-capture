@@ -39,7 +39,8 @@ const createTransactionsTable = async () => {
       ref_id                 INTEGER     NOT NULL REFERENCES refid_gclid_mapping(refid),
       amount                 NUMERIC     NOT NULL,
       status                 TEXT        NOT NULL DEFAULT 'captured',
-      created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      refunded_at            TIMESTAMPTZ
     )
   `);
 };
@@ -104,36 +105,35 @@ const insertTransaction = async (data) => {
 };
 
 /**
- * getTransactionByAuthnetId
- * Looks up a transaction by its Authorize.net transaction ID.
- * Used by the refund endpoint to retrieve gclid and Google Ads IDs.
- * @param {string} authnetTransactionId
+ * getTransactionByRefId
+ * Looks up the captured transaction for a given ref_id (the serial PK of refid_gclid_mapping).
+ * Used by the refund handler — refund webhooks carry a new authnet transaction ID so we
+ * identify the original row by ref_id instead.
+ * @param {number} refId
  * @returns {object|null} Row or null if not found.
  */
-const getTransactionByAuthnetId = async (authnetTransactionId) => {
+const getTransactionByRefId = async (refId) => {
   const result = await pool.query(
-    'SELECT * FROM transactions WHERE authnet_transaction_id = $1 LIMIT 1',
-    [authnetTransactionId]
+    "SELECT * FROM transactions WHERE ref_id = $1 AND status = 'captured' LIMIT 1",
+    [refId]
   );
   return result.rows[0] || null;
 };
 
 /**
- * updateTransactionStatus
- * Sets the status column on an existing transaction row.
- * Called when a refund webhook is received to mark the row 'refunded'.
- * @param {string} authnetTransactionId
- * @param {string} status - New status value, e.g. 'refunded'.
+ * markTransactionRefunded
+ * Sets status = 'refunded' and records the refund timestamp in one update.
+ * @param {number} refId
  */
-const updateTransactionStatus = async (authnetTransactionId, status) => {
+const markTransactionRefunded = async (refId) => {
   try {
     await pool.query(
-      'UPDATE transactions SET status = $1 WHERE authnet_transaction_id = $2',
-      [status, authnetTransactionId]
+      "UPDATE transactions SET status = 'refunded', refunded_at = NOW() WHERE ref_id = $1 AND status = 'captured'",
+      [refId]
     );
   } catch (err) {
-    console.error('[db] updateTransactionStatus failed:', err.message);
-    await sendErrorEmail(`updateTransactionStatus failed for txn=${authnetTransactionId}: ${err.message}`);
+    console.error('[db] markTransactionRefunded failed:', err.message);
+    await sendErrorEmail(`markTransactionRefunded failed for ref_id=${refId}: ${err.message}`);
     throw err;
   }
 };
@@ -225,6 +225,6 @@ export {
   insertGclidMapping,
   getMappingByRefId,
   getDomainById,
-  getTransactionByAuthnetId,
-  updateTransactionStatus,
+  getTransactionByRefId,
+  markTransactionRefunded,
 };

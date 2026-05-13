@@ -2,8 +2,8 @@ import express from 'express';
 import verifySignature from '../middleware/verifySignature.js';
 import {
   insertTransaction,
-  getTransactionByAuthnetId,
-  updateTransactionStatus,
+  getTransactionByRefId,
+  markTransactionRefunded,
   getMappingByRefId,
   getDomainById,
 } from '../services/db.js';
@@ -36,28 +36,22 @@ const handleAuthCapture = async ({ payload, refId, gclid, siteConfig }) => {
   });
 };
 
-const handleRefund = async ({ payload, gclid, siteConfig }) => {
-  const transactionId = payload?.payload?.id;
-
-  if (!transactionId) {
-    console.error('[webhook/refund] Missing transactionId in payload');
-    return;
-  }
-
-  // Look up the original transaction to get its created_at for the adjustment timestamp.
-  const original = await getTransactionByAuthnetId(transactionId).catch((err) => {
+const handleRefund = async ({ refId, gclid, siteConfig }) => {
+  // Look up the original captured transaction by ref_id.
+  // Refund webhooks carry a new authnet transaction ID, so we can't use that to find the original row.
+  const original = await getTransactionByRefId(refId).catch((err) => {
     console.error('[webhook/refund] DB lookup failed:', err.message);
     return null;
   });
 
   if (!original) {
-    console.warn(`[webhook/refund] Original transaction not found for txn=${transactionId} — skipping`);
+    console.warn(`[webhook/refund] Original captured transaction not found for ref_id=${refId} — skipping`);
     return;
   }
 
   // Mark the row refunded regardless of whether the Google Ads upload succeeds.
-  await updateTransactionStatus(transactionId, 'refunded').catch(() => {
-    // updateTransactionStatus already logged the error; continue to attempt Google Ads upload.
+  await markTransactionRefunded(refId).catch(() => {
+    // markTransactionRefunded already logged the error; continue to attempt Google Ads upload.
   });
 
   // Upload a restatement adjustment that sets the conversion value to 0 (full refund).
@@ -139,7 +133,7 @@ router.post('/authorizenet', verifySignature, async (req, res) => {
   }
 
   if (eventType === 'net.authorize.payment.refund.created') {
-    await handleRefund({ payload: req.body, gclid, siteConfig });
+    await handleRefund({ refId: parseInt(merchantReferenceId, 10), gclid, siteConfig });
   } else if (eventType === 'net.authorize.payment.authcapture.created') {
     await handleAuthCapture({ payload: req.body, refId: merchantReferenceId, gclid, siteConfig });
   } else {
