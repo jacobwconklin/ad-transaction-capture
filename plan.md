@@ -126,6 +126,7 @@ SMTP_PORT                      # SMTP port (587 for TLS, 465 for SSL)
 SMTP_USER                      # SMTP login / sender address
 SMTP_PASS                      # SMTP password
 ERROR_EMAIL_TO                 # Recipient for error notifications
+SUBMIT_TO_GOOGLE_ADS          # Set to 'true' to actually submit to Google Ads; omit or set to anything else to dry-run
 ```
 Per-site values (`customerId`, `conversionActionId`, `currency`) come from the request body — nothing per-site in `.env`.
 

@@ -74,7 +74,7 @@ app.get('/health', async (req, res) => {
   }
 });
 
-/** // TODO overkill / unnecessary want to take out once working.
+/**
  * Bootstrap — ensure DB schema exists before accepting traffic.
  * createTransactionsTable is idempotent so it is safe to run on every startup.
  */

@@ -56,6 +56,18 @@ const withRetry = async (label, fn) => {
 const uploadConversion = async ({ gclid, conversionDateTime, conversionValue, siteConfig }) => {
   const { customerId, conversionActionId, currency } = siteConfig;
 
+  if (process.env.SUBMIT_TO_GOOGLE_ADS?.toLowerCase() !== 'true') {
+    console.log('[googleAds] SUBMIT_TO_GOOGLE_ADS is not set to true — skipping upload. Provided values:', {
+      customerId,
+      conversionActionId,
+      currency,
+      gclid,
+      conversionDateTime,
+      conversionValue,
+    });
+    return;
+  }
+
   await withRetry(`uploadConversion(customerId=${siteConfig.customerId})`, async () => {
     const customer = client.Customer({
       customer_id: customerId,
@@ -91,6 +103,17 @@ const uploadConversion = async ({ gclid, conversionDateTime, conversionValue, si
  */
 const uploadRefundAdjustment = async ({ gclid, conversionDateTime, adjustmentDateTime, siteConfig }) => {
   const { customerId, conversionActionId } = siteConfig;
+
+  if (process.env.SUBMIT_TO_GOOGLE_ADS?.toLowerCase() !== 'true') {
+    console.log('[googleAds] SUBMIT_TO_GOOGLE_ADS is not set to true — skipping refund adjustment. Provided values:', {
+      customerId,
+      conversionActionId,
+      gclid,
+      conversionDateTime,
+      adjustmentDateTime,
+    });
+    return;
+  }
 
   await withRetry(`uploadRefundAdjustment(customerId=${siteConfig.customerId})`, async () => {
     const customer = client.Customer({
