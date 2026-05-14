@@ -9,7 +9,6 @@ Express REST API that receives Authorize.net payment webhooks, persists transact
 - **Runtime:** Node.js + Express
 - **Database:** PostgreSQL (via `pg` or `postgres` npm package)
 - **Google Ads:** `google-ads-api` npm package
-- **Auth:** Authorize.net webhook signature verification (HMAC-SHA512)
 
 ---
 
@@ -23,8 +22,6 @@ Express REST API that receives Authorize.net payment webhooks, persists transact
 │   ├── db.js             # PostgreSQL connection + queries
 │   ├── email.js          # Error notification emails via SMTP
 │   └── googleAds.js      # Google Ads conversion upload + retry logic
-├── middleware/
-│   └── verifySignature.js # Authorize.net HMAC verification
 ├── .env                  # Secrets (never commit)
 └── plan.md
 ```
@@ -73,7 +70,6 @@ Per-site config (currency, conversion action ID, customer ID) is stored in the `
 - [ ] On `POST /webhook/authorizenet`, read `merchantReferenceId` from the Authorize.net payload, look up `gclid` and `domain_id` from `refid_gclid_mapping`, then look up site config from `domains` by `domain_id`
 
 ### 4. Webhook Endpoint — `POST /webhook/authorizenet`
-- [ ] Verify Authorize.net `X-ANET-Signature` header (HMAC-SHA512 of raw body vs. signature key)
 - [ ] Parse payload, extract: `eventType`, `merchantReferenceId`, `transactionId`, `amount`, `responseCode`
 - [ ] If `merchantReferenceId` is absent, log that the transaction did not originate from a Google Ad and return early
 - [ ] Look up `gclid` and `domain_id` from `refid_gclid_mapping` by `merchantReferenceId`
@@ -116,7 +112,6 @@ Per-site config (currency, conversion action ID, customer ID) is stored in the `
 ```
 PORT
 DATABASE_URL
-AUTHNET_SIGNATURE_KEY
 GOOGLE_ADS_DEVELOPER_TOKEN     # Shared across all sites
 GOOGLE_ADS_CLIENT_ID           # Shared OAuth app
 GOOGLE_ADS_CLIENT_SECRET

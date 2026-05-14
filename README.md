@@ -108,7 +108,11 @@ curl http://localhost:3000/health
 
 Visit the api docs to test and verify the server is accessible externally:
 ```
-TODO
+Currently at:
+http://192.241.152.156/api-docs/
+
+If recreated on new droplet this will be at:
+http://<ip-address>/api-docs/
 ```
 
 ---

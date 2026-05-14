@@ -10,15 +10,7 @@ import { testConnection, createTransactionsTable, createDomainsTable, createGcli
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Parse raw body as Buffer so verifySignature can compute HMAC over the exact bytes Authorize.net sent.
-// Must come before express.json() so the raw body is preserved.
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  })
-);
+app.use(express.json());
 
 // Mount webhook routes under /webhook
 app.use('/webhook', webhookRouter);

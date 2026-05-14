@@ -1,5 +1,4 @@
 import express from 'express';
-import verifySignature from '../middleware/verifySignature.js';
 import {
   insertTransaction,
   getTransactionByRefId,
@@ -76,8 +75,6 @@ const handleRefund = async ({ refId, gclid, siteConfig }) => {
  *       the merchantReferenceId in the payload, then persists the transaction and
  *       uploads a conversion (or refund adjustment) to Google Ads.
  *       Always returns 200 so Authorize.net does not retry delivery.
- *     security:
- *       - hmacSignature: []
  *     responses:
  *       200:
  *         description: Event received (always returned so Authorize.net does not retry)
@@ -90,7 +87,7 @@ const handleRefund = async ({ refId, gclid, siteConfig }) => {
  *                   type: boolean
  *                   example: true
  */
-router.post('/authorizenet', verifySignature, async (req, res) => {
+router.post('/authorizenet', async (req, res) => {
   // Respond 200 immediately — processing runs after the response is sent.
   res.status(200).json({ received: true });
 
@@ -100,9 +97,6 @@ router.post('/authorizenet', verifySignature, async (req, res) => {
   console.log(
     `[webhook] Received authorize.net event eventType=${eventType} at=${new Date().toISOString()}`
   );
-
-  // TODO: Remove once payload shape is confirmed in prod.
-  console.log('[webhook] Full webhook payload:', JSON.stringify(req.body, null, 2));
 
   // merchantReferenceId is only present when the transaction originated from a Google Ad click.
   if (!merchantReferenceId) {
