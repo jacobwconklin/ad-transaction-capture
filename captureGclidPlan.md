@@ -175,6 +175,22 @@ Steps:
   6. Always return HTTP 200 to Authorize.net (even on errors — otherwise it retries)
 ```
 
+The Full WordPress Flow:
+```
+1. User arrives at page with ?gclid=Abc123 in URL
+2. captureGclid.js runs:
+   a. Reads gclid from URL
+   b. POSTs to /wp-json/gclid/v1/save  ← this PHP handles it
+   c. Gets back { ref_id: 42 }
+   d. Writes 42 into the hidden Ref ID form field
+3. User fills out form and submits
+4. WPForms fires wpforms_authorize_net_process_payment_single_args
+   ← this PHP reads field value (42) and sets invoiceNumber = 42
+5. WPForms sends payment to Authorize.net with invoiceNumber=42
+6. Authorize.net fires webhook to your server
+7. Your server: reads merchantReferenceId (= 42) → looks up gclid in DB → uploads offline conversion to Google Ads
+```
+
 ## Setup Checklist
 
 - [ ] Create a hidden field in your WPForms form for the GCLID
