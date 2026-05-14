@@ -132,9 +132,17 @@ Per-site values (`customerId`, `conversionActionId`, `currency`) come from the r
 
 ---
 
+# Modernization Goals
+
+1. Use `const` and `let` instead of `var` everywhere.
+2. Use ES modules and `import`/`export` rather than `require`/`module.exports`.
+3. Use arrow functions rather than the `function` keyword.
+
+---
+
 ## Authorize.net Notes
 - Webhooks send a `POST` with JSON body and `X-ANET-Signature` header
-- The `gclid` must be stored as a custom field on the Authorize.net transaction (populated from WordPress hidden field at checkout)
+- See `captureGclidPlan.md` for details on identifying gclid after receiving webhook
 - Events to handle: `net.authorize.payment.authcapture.created`, `net.authorize.payment.refund.created`
 
 ## Google Ads Notes
